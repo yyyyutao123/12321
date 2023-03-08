@@ -1,0 +1,760 @@
+pragma solidity >=0.7.0 <0.9.0;
+
+
+contract trade{
+    //设置一个拥有者（老大）
+    address private owner;
+    //雇主id
+    uint pid;
+    //司机id
+    uint did;
+    //地图的边界
+    uint l_long=0;
+    uint r_long=10000;
+    uint d_lati=0;
+    uint u_lati=10000;
+    mapping(address=>uint) public balanceOf;
+
+    struct parking_lot{
+        //输入时乘1000，小数点右移3位
+        uint longitude;//经度
+        uint latitude;//纬度
+        bool empty;//true：空闲
+        bool[24] time_avial;//空闲时间段数组
+        address owner_address;//主人地址
+        uint transactions;//交易次数
+        uint price;//每小时单价
+        uint[10] star_queue;
+        uint star_f;
+        uint star_r;
+    }
+    struct parking_owner{
+        parking_lot[] parking_list;//停车位列表
+        uint count; //停车场的个数
+        bool isUsed;
+        uint index;//在keys的下标
+    }
+    //雇主的集合
+    struct PO{
+        mapping(address=>parking_owner) Parking_owners;
+        address[] keys;//为了遍历mapping
+    }
+    
+    PO pos;
+
+
+    struct driver{
+        //输入时乘1000，小数点右移3位
+        uint longitude;//经度
+        uint latitude;//纬度
+        address owner_address;
+        bool[24] time_avial;//需用时间段数组
+        bool isUsed;
+        uint[10] star_queue;
+        uint star_f;
+        uint star_r;
+        uint price_limit;//最多的钱
+        uint speed;//车速
+        uint transactions;//交易次数
+        uint index;//在keys的下标
+        uint8 sta;//是否正在请求
+    }
+    //司机的集合
+    struct DV{
+        mapping(address=>driver) Drivers;
+        address[] keys;//为了遍历mapping
+    }
+    DV dvs;
+
+    // -------------------------------
+    function view_p()public view returns(parking_owner memory){
+        return pos.Parking_owners[msg.sender];
+    }
+
+    function view_d()public view returns(driver memory){
+        return dvs.Drivers[msg.sender];
+    }
+
+    function view_driver_list()public view returns(address_list[] memory){
+        return s_drivers;
+    }
+
+    // -------------------------------
+
+
+    //雇主报名                经度     纬度           合法时间数组
+    function p_sign_up(uint long,uint lati,bool[24] memory tim,uint price,string memory private_key) public{
+        if(pos.Parking_owners[msg.sender].isUsed){
+            p_add_parking_lot(long,lati,tim,price);
+            return ;
+        }
+        parking_lot memory p;
+        p.time_avial=tim;//数组赋值
+        p.longitude=long;
+        p.latitude=lati;
+
+        p.empty=true;
+        p.owner_address=msg.sender;//添加这个车位的主人
+        p.transactions=0;
+
+        p.price=price;
+        p.star_f=0;
+        p.star_r=0;
+        parking_owner storage pk=pos.Parking_owners[msg.sender];
+        pos.Parking_owners[msg.sender].parking_list.push(p);
+        pk.count=1;
+        pk.isUsed=true;
+        pk.index=pos.keys.length;
+        pid=pid+1;
+        pos.keys.push(msg.sender);//key进数组
+        
+    }
+
+    //雇主添加停车位
+    function p_add_parking_lot(uint long,uint lati,bool[24] memory tim,uint price)public{
+        // parking_owner memory pk=Parking_owners[msg.sender];
+        require(pos.Parking_owners[msg.sender].isUsed,"parking owner havn't register");
+        // parking_owner storage pk=Parking_owners[msg.sender];
+        parking_lot memory pl;
+        pl.longitude=long;
+        pl.latitude=lati;
+        pl.empty=true;
+        pl.time_avial=tim;
+        pl.owner_address=msg.sender;//添加这个车位的主人
+        pl.transactions=0;
+        pl.price=price;
+        pl.star_f=0;
+        pl.star_r=0;
+        pos.Parking_owners[msg.sender].parking_list.push(pl);
+        pos.Parking_owners[msg.sender].count++;
+    }
+
+    //删除雇主
+    function p_delete()public{
+        if(!pos.Parking_owners[msg.sender].isUsed){
+            return;
+        }
+        withdraw();
+        //keys中删除
+        address last_address = pos.keys[pos.keys.length-1];
+        uint cur_index = pos.Parking_owners[msg.sender].index;
+
+        pos.Parking_owners[last_address].index=cur_index;
+        pos.keys[cur_index]=last_address;
+        pos.keys.pop();
+        delete pos.Parking_owners[msg.sender];
+    }
+
+    //雇主更新时间
+    function p_update_tim(uint index,bool[24] memory tim)public{
+        if(!pos.Parking_owners[msg.sender].isUsed){
+            return;
+        }
+        pos.Parking_owners[msg.sender].parking_list[index].time_avial=tim;
+    }
+
+    function d_sign_up(string memory private_key) public payable{
+        require(!dvs.Drivers[msg.sender].isUsed,"driver have exist");
+        balanceOf[msg.sender] = msg.value;
+        driver storage d=dvs.Drivers[msg.sender];
+        d.owner_address=msg.sender;//添加这个车的主人
+        d.isUsed=true;
+        d.index=dvs.keys.length;
+        d.sta=0;
+        d.transactions=0;
+        d.star_f=0;
+        d.star_r=0;
+        did=did+1; 
+        dvs.keys.push(msg.sender);//key进数组
+    }
+
+    //加钱
+    function d_mint() public payable{
+        require(dvs.Drivers[msg.sender].isUsed,"driver havn't register");
+        balanceOf[msg.sender] = balanceOf[msg.sender] + msg.value;
+    }
+
+    uint buf=5;
+    uint cur_num=0;
+
+    function justice(address a) private returns(bool){
+        driver memory dv=dvs.Drivers[a];
+        return dv.longitude > l_long && dv.longitude < r_long && dv.latitude > d_lati && dv.latitude <u_lati && dv.sta == 0 ;
+    }
+
+    /*
+    请求函数，最后打算由chainlink调用
+    */
+
+
+
+    function d_request(uint long,uint lati,bool[24] memory tim,uint price_limit,uint speed) public{
+        require(dvs.Drivers[msg.sender].isUsed,"driver not register");
+        
+        cur_num+=1;
+        //需要修改用storage
+        driver storage d=dvs.Drivers[msg.sender];
+        //状态变为1，请求状态(等待匹配)
+        d.longitude=long;
+        d.latitude=lati;
+        //如果不在区域中应该被拦截
+        require(justice(msg.sender),"driver is illegal");
+        //匹配状态
+        d.sta = 1;
+        for(uint i=1;i<24;i++){
+            d.time_avial[i]=tim[i];
+        }
+        d.price_limit=price_limit;
+        d.speed=speed;
+        //入司机列表
+        address_list memory ad;
+        ad.adrs=msg.sender;
+        ad.is_single=true;
+        ad.prep=0;
+        s_drivers.push(ad);//将该车位添加入列表
+        //够了buf个人就要开始匹配
+        if(cur_num==buf){
+            match_game();
+            //清零
+            cur_num=0;
+            //清空队列以及匹配列表
+            delete s_drivers;
+            delete s_parking_lots;
+        }
+    }
+
+    //删除司机
+    function d_delete()public{
+        if(!dvs.Drivers[msg.sender].isUsed){
+            return;
+        }
+        withdraw();
+        //keys中删除
+        address last_address = dvs.keys[dvs.keys.length-1];
+        uint cur_index = dvs.Drivers[msg.sender].index;
+
+        dvs.Drivers[last_address].index=cur_index;
+        dvs.keys[cur_index]=last_address;
+        dvs.keys.pop();
+        delete dvs.Drivers[msg.sender];
+    }
+    //司机请求处理返回
+
+
+    //----------------------------------//
+    struct address_list{
+        address adrs;//当前用户,或者停车场雇主
+        uint parking_lot_index;//停车位序号(雇主)；driver用不到，闲置；
+        bool is_single;
+        uint spouse;
+        uint[] preference_list;//偏好列表,存的是索引
+        uint[] preference_list_index;//偏好列表的索引，preference_list_index[d_index]:d_index号车主在当前车位中排第preference_list_index[d_index]
+        uint prep;//指向当前偏好列表中的元素初始化为0
+    }
+
+    //只能用storage，因为是全局变量
+    address_list[] s_parking_lots;//停车位集合
+
+    address_list[] s_drivers;//司机集合（求婚方）
+
+    struct single_queue{
+        uint[] single_Q;//存储司机数组下标
+        uint f;//队列头
+        uint r;//队列尾
+    }
+    
+    //时间验证                              d                  p
+    function time_admit(bool[24] memory time_avial,bool[24] memory tim)private returns(bool){
+        bool sum=false;
+        for(uint i=0;i<24;i++){
+            if(sum)break;
+            sum=sum || (time_avial[i] && tim[i]);
+        }
+        return !sum;//如果为1返回false，为0 返回true
+    }
+
+    function abs(uint a,uint b)private returns(uint){
+        return a > b ? a-b : b-a;
+    }
+
+    function cul_star_queue(uint[10] memory que,uint f,uint r)private returns(uint avg){
+        avg=0;
+        uint cnt=0;
+        while(f!=(r+1)%10){
+            avg+=que[f];
+            f=(f+1)%10;
+            cnt++;
+        }
+        avg=avg/cnt;
+    }
+
+    function utility_of_common(address d,address p,uint index,uint sum_tim,uint sum_transaction,uint sum_price,uint sum_star)private returns(uint){
+        //计算对于driver来说停车位的效用
+        //全部归千化
+        //计算平均star
+        uint sum=cul_star_queue(pos.Parking_owners[p].parking_list[index].star_queue,pos.Parking_owners[p].parking_list[index].star_f,pos.Parking_owners[p].parking_list[index].star_r);
+        
+        sum=sum*1000/sum_star;
+        //计算距离
+        sum_tim=(abs(pos.Parking_owners[p].parking_list[index].longitude ,dvs.Drivers[d].longitude)+abs(pos.Parking_owners[p].parking_list[index].latitude,dvs.Drivers[d].latitude))*1000/sum_tim;
+        uint arv_tim=sum_tim/dvs.Drivers[d].speed;
+        sum_transaction=pos.Parking_owners[p].parking_list[index].transactions*1000/sum_transaction;//归千化
+        if(sum_price!=0) sum_price=pos.Parking_owners[p].parking_list[index].price*1000/sum_price;
+        //加4k保证效用为正数
+        return 4000+sum-arv_tim+sum_transaction-sum_price;
+    }
+
+    //筛选初始address
+    function member_init()private {
+        //初始化车位列表
+        uint L=pos.keys.length;
+        address[] memory keys=pos.keys;
+        for(uint i=0;i<L;i++){
+            address adrs=keys[i];//停车场雇主
+            parking_owner memory po=pos.Parking_owners[adrs];
+            for(uint j=0;j<po.count;j++){
+                parking_lot memory pl=po.parking_list[j];//获取停车场结构体
+                //在范围内并且空闲
+                if(pl.longitude > l_long && pl.longitude < r_long && pl.latitude > d_lati && pl.latitude <u_lati && pl.empty ){
+                    address_list memory p_lot;
+                    p_lot.adrs=adrs;
+                    p_lot.parking_lot_index=j;
+                    p_lot.is_single=true;
+                    p_lot.prep=0;
+                    s_parking_lots.push(p_lot);//将该车位添加入列表
+                    //关闭
+                    pos.Parking_owners[adrs].parking_list[j].empty=false;
+                }
+            }
+        }
+    }
+    //判断钱是否够用
+    function price_admit(uint lim,bool[24] memory tim,uint price_limit,uint price)private returns(bool){
+        uint cnt=0;
+        for(uint i=0 ; i<24 ; i++){
+            if(!tim[i])cnt++;
+        }
+        //不仅要小于司机自己的限制，也要小于司机的腰包
+        return cnt*price < price_limit && cnt*price < lim ;
+    }
+
+    //偏好列表计算（建模结束再书写）计算效用函数
+    function prefer_cul()private returns(address_list[] memory drivers,address_list[] memory parking_lots){
+        address_list[] memory parking_lots=s_parking_lots;
+        address_list[] memory drivers=s_drivers;
+        //对d来说p的效用
+
+        for(uint i=0;i<drivers.length;i++){
+            uint p_tim=0;
+            uint p_sum_transaction=0;
+            uint p_sum_price=0;
+            uint p_avg_star=0;
+            for(uint j=0;j<parking_lots.length;j++){
+                //给一笔钱，如果钱不够也不能放在偏好列表中
+                if(time_admit(dvs.Drivers[drivers[i].adrs].time_avial, pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].time_avial)){
+                    if(price_admit(balanceOf[drivers[i].adrs],dvs.Drivers[drivers[i].adrs].time_avial,dvs.Drivers[drivers[i].adrs].price_limit,pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].price)){//如果价格也够用
+                        //合法的距离总和
+                        p_tim+=(abs(pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].longitude,dvs.Drivers[drivers[i].adrs].longitude)+abs(pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].latitude,dvs.Drivers[drivers[i].adrs].latitude))/dvs.Drivers[drivers[i].adrs].speed;
+                        //合法的交易总次数
+                        p_sum_transaction+=pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].transactions;
+                        //合法的定价总和
+                        p_sum_price+=pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].price;
+                        //合法的平均star总和
+                        uint sum=cul_star_queue(
+                            pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].star_queue,
+                            pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].star_f,
+                            pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].star_r
+                            );
+                        p_avg_star+=sum;
+                    }
+                }
+            }
+            for(uint j=0;j<parking_lots.length;j++){//先把所有的效用值计算出来
+                //计算一下时间是否符合
+                //符合，计算效用值加入
+                if(time_admit(dvs.Drivers[drivers[i].adrs].time_avial, pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].time_avial)){
+                    if(price_admit(balanceOf[drivers[i].adrs],dvs.Drivers[drivers[i].adrs].time_avial,dvs.Drivers[drivers[i].adrs].price_limit,pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].price)){//如果价格也够用
+                        // uint p_utility=utility_of_parking_lot(drivers[i].adrs,parking_lots[j].adrs,parking_lots[j].parking_lot_index,p_tim,p_sum_transaction,p_sum_price,p_avg_star);
+                        uint p_utility=utility_of_common(drivers[i].adrs,parking_lots[j].adrs,parking_lots[j].parking_lot_index,p_tim,p_sum_transaction,p_sum_price,p_avg_star);
+                        s_drivers[i].preference_list.push(p_utility);//存入p的效用
+                        s_drivers[i].preference_list_index.push(j);//存入p的下标
+                    }
+                }
+                else{//不符合的话,下一个
+                    continue;
+                }
+            }
+        }
+        //对p来说d的效用
+        for(uint j=0;j<parking_lots.length;j++){
+            uint d_tim=0;
+            uint d_sum_transaction=0;
+            uint d_avg_star=0;
+            for(uint i=0;i<drivers.length;i++){
+                if(time_admit(dvs.Drivers[drivers[i].adrs].time_avial, pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].time_avial)){
+                    if(price_admit(balanceOf[drivers[i].adrs],dvs.Drivers[drivers[i].adrs].time_avial,dvs.Drivers[drivers[i].adrs].price_limit,pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].price)){//如果价格也够用
+                        //合法的距离总和
+                        d_tim+=(abs(pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].longitude,dvs.Drivers[drivers[i].adrs].longitude)+abs(pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].latitude,dvs.Drivers[drivers[i].adrs].latitude))/dvs.Drivers[drivers[i].adrs].speed;
+                        //合法的交易总次数
+                        d_sum_transaction+=dvs.Drivers[drivers[i].adrs].transactions;
+                        //合法的平均star总和
+                        uint sum=cul_star_queue(
+                            dvs.Drivers[drivers[i].adrs].star_queue,
+                            dvs.Drivers[drivers[i].adrs].star_f,
+                            dvs.Drivers[drivers[i].adrs].star_r
+                            );
+                        d_avg_star+=sum;
+                    }
+                }
+            }
+            for(uint i=0;i<drivers.length;i++){//先把所有的效用值计算出来
+                //计算一下时间是否符合
+                //符合，计算效用值加入
+                if(time_admit(dvs.Drivers[drivers[i].adrs].time_avial, pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].time_avial)){
+                    if(price_admit(balanceOf[drivers[i].adrs],dvs.Drivers[drivers[i].adrs].time_avial,dvs.Drivers[drivers[i].adrs].price_limit,pos.Parking_owners[parking_lots[j].adrs].parking_list[parking_lots[j].parking_lot_index].price)){//如果价格也够用
+                        // uint d_utility=utility_of_driver(drivers[i].adrs,parking_lots[j].adrs,parking_lots[j].parking_lot_index,d_tim,d_sum_transaction,d_avg_star);
+                        uint d_utility=utility_of_common(drivers[i].adrs,parking_lots[j].adrs,parking_lots[j].parking_lot_index,d_tim,d_sum_transaction,0,d_avg_star);
+                        s_parking_lots[j].preference_list.push(d_utility);//存入d的效用
+                        s_parking_lots[j].preference_list_index.push(i);//存入d的下标
+                    }
+                }
+                else{//不符合的话,下一个
+                    continue;
+                }
+            }
+        }
+        //对司机偏好列表进行排序
+        /*
+        思路：
+        1.对preference_list排序，preference_list_index跟着动，然后index赋给preference_list就得到了原始的偏好列表。
+        2.然后再遍历一遍preference_list生成偏好索引preference_list_index[preference_list[i]]=i;
+        例如：
+        在d司机的偏好列表中最喜欢的是9号p，那么在1结束后preference_list[0]==9，
+        此时我们期望的index数组中preference_list_index[9]=0。故程序上述正确
+        ***需要注意一下气泡***
+        */
+        parking_lots=s_parking_lots;
+        drivers=s_drivers;
+        for(uint i=0;i<drivers.length;i++){
+            //排序
+            uint maxn=drivers[i].preference_list_index[0];//找到最大的序号
+            for(uint j=0;j<drivers[i].preference_list.length-1;j++){
+                for(uint k=0;k<drivers[i].preference_list.length-j-1;k++){
+                    if(drivers[i].preference_list[k]<drivers[i].preference_list[k+1]){
+                        uint temp=drivers[i].preference_list[k+1];
+                        drivers[i].preference_list[k+1]=drivers[i].preference_list[k];
+                        drivers[i].preference_list[k]=temp;
+                        temp=drivers[i].preference_list_index[k];
+                        drivers[i].preference_list_index[k]=drivers[i].preference_list_index[k+1];
+                        drivers[i].preference_list_index[k+1]=temp;
+                    }
+                }
+                if(drivers[i].preference_list_index[j+1]>maxn)maxn=drivers[i].preference_list_index[j+1];
+            }
+            for(uint j=0;j<drivers[i].preference_list.length;j++){
+                drivers[i].preference_list[j]=drivers[i].preference_list_index[j];
+            }
+            //按照maxn给index分配空间
+            while(drivers[i].preference_list_index.length<maxn+1){
+                s_drivers[i].preference_list_index.push(0);
+            }//扩展数组长度
+            for(uint j=0;j<drivers[i].preference_list.length;j++){
+                drivers[i].preference_list_index[drivers[i].preference_list[j]]=j;
+            }
+        }
+
+        //对车位偏好列表进行排序
+        for(uint i=0;i<parking_lots.length;i++){
+            //排序
+            uint maxn=parking_lots[i].preference_list_index[0];//找到最大的序号
+            for(uint j=0;j<parking_lots[i].preference_list.length-1;j++){
+                for(uint k=0;k<parking_lots[i].preference_list.length-j-1;k++){
+                    if(parking_lots[i].preference_list[k]<parking_lots[i].preference_list[k+1]){
+                        uint temp=parking_lots[i].preference_list[k+1];
+                        parking_lots[i].preference_list[k+1]=parking_lots[i].preference_list[k];
+                        parking_lots[i].preference_list[k]=temp;
+                        temp=parking_lots[i].preference_list_index[k];
+                        parking_lots[i].preference_list_index[k]=parking_lots[i].preference_list_index[k+1];
+                        parking_lots[i].preference_list_index[k+1]=temp;
+                    }
+                }
+                if(parking_lots[i].preference_list_index[j+1]>maxn)maxn=parking_lots[i].preference_list_index[j+1];
+            }
+            for(uint j=0;j<parking_lots[i].preference_list.length;j++){
+                parking_lots[i].preference_list[j]=parking_lots[i].preference_list_index[j];
+            }
+            //按照maxn给index分配空间
+            while(parking_lots[i].preference_list_index.length<maxn+1){
+                s_parking_lots[i].preference_list_index.push(0);
+            }//扩展数组长度
+            for(uint j=0;j<parking_lots[i].preference_list.length;j++){
+                parking_lots[i].preference_list_index[parking_lots[i].preference_list[j]]=j;
+            }
+            
+        }
+        parking_lots=s_parking_lots;
+        drivers=s_drivers;
+        return (drivers , parking_lots);
+    }
+
+    function game_init()private returns(single_queue memory SQ , address_list[] memory drivers,address_list[] memory parking_lots){
+        //筛选条件合适的address加入集合
+        //距离一公里以内
+        member_init();
+        //计算偏好列表
+        address_list[] memory drivers;
+        address_list[] memory parking_lots;
+
+        ( drivers , parking_lots ) = prefer_cul();
+        //初始化单身队列
+        SQ.single_Q = new uint[](drivers.length);
+        for(uint i=0;i<drivers.length;i++)
+        {
+            SQ.single_Q[i]=i;//全部进入队列
+        }
+        SQ.f=0;
+        SQ.r=drivers.length-1;//初始时队列满
+    }
+    //结果集的结构体
+    struct p_rs{
+        uint long;
+        uint lati;
+        uint index;
+        address adrs;//对方的地址
+    }
+    struct d_rs{
+        address d;
+        uint index;//记录这个司机使用的是自己的哪一个停车位
+    }
+    struct rs{
+        bool player;//true:driver
+        bool isUsed;
+        d_rs[] ds;
+        p_rs p;
+    }
+    mapping(address=>rs) result;
+
+/*
+    address_list[] parking_lots;//停车位集合
+
+    address_list[] drivers;//司机集合
+*/
+    //我们认为driver是主动的，最后需要返回给driver，driver可以根据他的地址查询匹配结果
+    function match_game()private{
+        //初始化游戏：得到该用户临近的driver和parking_owner,以及其偏好列表
+        address p_address=msg.sender;
+        uint p_lot_index;
+        bool status=false;
+        
+        
+        address_list[] memory drivers;
+        address_list[] memory parking_lots;
+        single_queue memory SQ;
+        // dvs.Drivers[msg.sender].empty=true;//在发起请求
+        ( SQ , drivers , parking_lots ) = game_init();
+        // dvs.Drivers[msg.sender].empty=false;//请求完毕，不再计算
+        uint d_num=0;
+        uint p_num=0;
+        // while (SQ.f!=(SQ.r+1)%drivers.length)//当队列不为空
+        while ( d_num!=drivers.length && p_num!=parking_lots.length )
+        {
+            uint d_index= SQ.single_Q[SQ.f];//取队列头的driver
+            //出队列
+            SQ.f=(SQ.f+1)%drivers.length;
+            //拿到当前driver偏好列表的指针
+            uint cur_prep=drivers[d_index].prep;
+            if(cur_prep-1==drivers[d_index].preference_list.length){//如果找到偏好列表最后的也还单身，就算了吧
+                d_num++;
+                continue;
+            }
+            //当前偏好列表中的parking_owner
+            uint p_index=drivers[d_index].preference_list[cur_prep];
+            
+            if(parking_lots[p_index].is_single)//如果车位也没有匹配的话
+            {
+                //匹配
+                drivers[d_index].is_single=false;
+                drivers[d_index].spouse=p_index;
+                parking_lots[p_index].is_single=false;
+                parking_lots[p_index].spouse=d_index;
+                d_num++;p_num++;//计数
+            }
+            else//如果已经匹配了，那就要比一比
+            {
+                uint new_d = parking_lots[p_index].preference_list_index[d_index];
+                uint old_d_index = parking_lots[p_index].spouse;
+                uint old_d = parking_lots[p_index].preference_list_index[old_d_index];
+                if(new_d < old_d){//如果新的比旧的好就抛弃旧的
+                    drivers[d_index].spouse=p_index;
+                    parking_lots[p_index].spouse=d_index;
+                    //旧的车主恢复单身
+                    drivers[old_d_index].is_single=true;
+                    drivers[d_index].is_single=false;
+                    SQ.r=(SQ.r+1)%drivers.length;
+                    SQ.single_Q[SQ.r]=old_d;
+                }
+                else{//如果没有旧的好，这一轮匹配失败，重新入队列等待下一轮
+                    SQ.r=(SQ.r+1)%drivers.length;
+                    SQ.single_Q[SQ.r]=new_d;
+                }
+            }
+            drivers[d_index].prep++;//每一轮偏好指针往后走一格
+        }
+        //匹配完成后需要制作结果集，便于司机查询，并且修改用户状态
+        for(uint i=0;i<drivers.length;i++){
+            if(drivers[i].is_single){
+                //重新回到初始状态
+                dvs.Drivers[drivers[i].adrs].sta=0;
+                continue;
+            }
+            address a=drivers[i].adrs;
+            //封装结果集,司机
+            rs memory DR = result[a];
+            p_rs memory pl;
+            //停车场对象
+            parking_lot memory pltmp=pos.Parking_owners[parking_lots[drivers[i].spouse].adrs].parking_list[parking_lots[drivers[i].spouse].parking_lot_index];
+            pl.long=pltmp.longitude;
+            pl.lati=pltmp.latitude;
+            pl.index=parking_lots[drivers[i].spouse].parking_lot_index;
+            pl.adrs=parking_lots[drivers[i].spouse].adrs;
+            DR.player=true;//司机
+            DR.p=pl;
+            DR.isUsed=true;
+            //停车位
+            a=parking_lots[drivers[i].spouse].adrs;
+            rs memory PL = result[a];
+            PL.player=false;//停车场主人
+            PL.isUsed=true;
+            d_rs memory d_a;
+            d_a.d=a;
+            d_a.index=parking_lots[drivers[i].spouse].parking_lot_index;
+            result[a].ds.push(d_a);
+            //这一对司机和停车位状态更新
+            //使用状态
+            dvs.Drivers[drivers[i].adrs].sta=2;
+            //被使用状态
+            pos.Parking_owners[parking_lots[drivers[i].spouse].adrs].parking_list[parking_lots[drivers[i].spouse].parking_lot_index].empty=false;
+        }
+    }
+
+    struct p_rs_mini{
+        uint long;
+        uint lati;
+        address adrs;//对方的地址
+    }
+    //打分之后不能继续查询
+    //此次交易结束
+    //用户根据自己的地址查结果
+    function getResult() public returns(p_rs_mini memory p,d_rs[] memory adrss){
+        // require(admit_user(token),"You do not have this permission");
+        require(admit_rs(),"results not found");
+        d_rs[] memory a;
+        p_rs_mini memory pf;
+        if(result[msg.sender].player){
+            //包装一下
+            pf.long=result[msg.sender].p.long;
+            pf.lati=result[msg.sender].p.lati;
+            pf.adrs=result[msg.sender].p.adrs;
+            return (pf, a );
+        }
+        else{
+            return ( pf ,result[msg.sender].ds );
+        }
+    }
+
+    function admit_rs() private returns(bool){
+        return result[msg.sender].isUsed;
+    }
+    //司机到达后进行结算
+    function d_settle(uint star)public{
+        //必须是司机的结果
+        // require(admit_user(token) && result[token].player,"You do not have this permission");
+        require(admit_rs(),"results not found");
+        //给停车位打分
+        result[msg.sender].isUsed=false;
+        address pl_adrs=result[msg.sender].p.adrs;
+        uint index=result[msg.sender].p.index;
+        //更新交易次数数量
+        dvs.Drivers[msg.sender].transactions++;
+        dvs.Drivers[msg.sender].sta = 0;//回到初始状态
+        pos.Parking_owners[pl_adrs].parking_list[index].transactions++;
+        pos.Parking_owners[pl_adrs].parking_list[index].empty=true;//回到初始状态
+        uint r=(pos.Parking_owners[pl_adrs].parking_list[index].star_r+1)%10;
+        pos.Parking_owners[pl_adrs].parking_list[index].star_queue[r]=star;
+        //如果队列满了就往后移动
+        if(r==pos.Parking_owners[pl_adrs].parking_list[index].star_f){
+            pos.Parking_owners[pl_adrs].parking_list[index].star_f++;
+        }
+        pos.Parking_owners[pl_adrs].parking_list[index].star_r++;
+        //转账
+        uint cnt=0;
+        for(uint i=0;i<24;i++){
+            if(dvs.Drivers[msg.sender].time_avial[i])cnt++;
+        }
+        uint price=pos.Parking_owners[pl_adrs].parking_list[index].price*cnt;
+        //给driver扣钱
+        balanceOf[msg.sender]=balanceOf[msg.sender]-price;
+        //给parking_owner转钱
+        balanceOf[pl_adrs]=balanceOf[pl_adrs]+price;
+    }
+
+    //司机和雇主可以退钱
+    function withdraw()public{
+        uint val=balanceOf[msg.sender];
+        balanceOf[msg.sender]=0;
+        msg.sender.call{value: val}("");
+        
+    }
+    //给司机打分
+    function p_marking(uint idx,uint star)public returns(bool){
+        // require(admit_user(token) && !result[token].player,"You do not have this permission");
+        require(admit_rs(),"results not found");
+        bool flag=false;
+        for(uint i=0;i<result[msg.sender].ds.length;i++){
+            if(result[msg.sender].ds[i].index==idx){
+                flag=true;
+                address adrs=result[msg.sender].ds[i].d;
+                //打分
+                uint r=(dvs.Drivers[adrs].star_r+1)%10;
+                dvs.Drivers[adrs].star_queue[r]=star;
+                if(r==dvs.Drivers[adrs].star_f){
+                    dvs.Drivers[adrs].star_r++;
+                    dvs.Drivers[adrs].star_f++;
+                }
+                //在结果集中删除这个driver
+                result[msg.sender].ds[i]=result[msg.sender].ds[result[msg.sender].ds.length-1];
+                result[msg.sender].ds.pop();
+                break;
+            }
+        }
+        //全部删除完毕可以在结果集中删除
+        if(result[msg.sender].ds.length==0){
+            result[msg.sender].isUsed=false;
+        }
+        return flag;
+    }
+    
+    event OwnerSet(address indexed oldOwner, address indexed newOwner);
+
+    modifier isOwner() {
+        require(msg.sender == owner, "Caller is not owner");
+        _;
+    }
+    constructor() {
+        // console.log("Owner contract deployed by:", msg.sender);
+        owner = msg.sender; // 'msg.sender' is sender of current call, contract deployer for a constructor
+        //司机和雇主置零
+        pid=0;
+        did=0;
+        emit OwnerSet(address(0), owner);
+    }
+    //拥有者有权转让
+    function changeOwner(address newOwner) public isOwner {
+        emit OwnerSet(owner, newOwner);
+        owner = newOwner;
+    }
+    //拥有者有权转让
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+}
